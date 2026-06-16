@@ -76,12 +76,23 @@ export async function sbUpsertSessionUser(user: {
   if (user.loginMethod !== undefined) body.loginMethod = user.loginMethod ?? null;
 
   try {
-    // Use POST with Prefer: resolution=merge-duplicates for upsert
-    await sbFetch('users', {
+    // Use POST with Prefer: resolution=merge-duplicates for upsert (ON CONFLICT DO UPDATE)
+    // The Prefer header must be set correctly for PostgREST upsert
+    const url = `${SUPABASE_URL}/rest/v1/users`;
+    const res = await fetch(url, {
       method: 'POST',
-      headers: { Prefer: 'return=minimal,resolution=merge-duplicates' },
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        'Content-Type': 'application/json',
+        'Prefer': 'resolution=merge-duplicates,return=minimal',
+      },
       body: JSON.stringify(body),
     });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Supabase REST error ${res.status}: ${text}`);
+    }
     console.log(`[SessionUsers] Upserted user ${user.openId}`);
   } catch (error: any) {
     console.error('[SessionUsers] Failed to upsert user:', error?.message);
