@@ -75,25 +75,41 @@ export async function sbUpsertSessionUser(user: {
   if (user.email !== undefined) body.email = user.email ?? null;
   if (user.loginMethod !== undefined) body.loginMethod = user.loginMethod ?? null;
 
+  const baseHeaders = {
+    apikey: SUPABASE_SERVICE_KEY,
+    Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+    'Content-Type': 'application/json',
+  };
+
   try {
-    // Use POST with Prefer: resolution=merge-duplicates for upsert (ON CONFLICT DO UPDATE)
-    // The Prefer header must be set correctly for PostgREST upsert
-    const url = `${SUPABASE_URL}/rest/v1/users`;
-    const res = await fetch(url, {
+    // Step 1: Try INSERT first
+    const insertRes = await fetch(`${SUPABASE_URL}/rest/v1/users`, {
       method: 'POST',
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-        'Content-Type': 'application/json',
-        'Prefer': 'resolution=merge-duplicates,return=minimal',
-      },
-      body: JSON.stringify(body),
+      headers: { ...baseHeaders, Prefer: 'return=minimal' },
+      body: JSON.stringify({ ...body, createdAt: now }),
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Supabase REST error ${res.status}: ${text}`);
+
+    if (insertRes.ok || insertRes.status === 201) {
+      console.log(`[SessionUsers] Inserted new user ${user.openId}`);
+      return;
     }
-    console.log(`[SessionUsers] Upserted user ${user.openId}`);
+
+    // Step 2: If conflict (409) or any error, try PATCH (update)
+    const updateBody = { ...body };
+    delete (updateBody as any).openId; // don't update the key
+    const encodedOpenId = encodeURIComponent(user.openId);
+    const patchRes = await fetch(`${SUPABASE_URL}/rest/v1/users?openId=eq.${encodedOpenId}`, {
+      method: 'PATCH',
+      headers: { ...baseHeaders, Prefer: 'return=minimal' },
+      body: JSON.stringify(updateBody),
+    });
+
+    if (!patchRes.ok) {
+      const text = await patchRes.text().catch(() => '');
+      throw new Error(`Supabase REST PATCH error ${patchRes.status}: ${text}`);
+    }
+
+    console.log(`[SessionUsers] Updated existing user ${user.openId}`);
   } catch (error: any) {
     console.error('[SessionUsers] Failed to upsert user:', error?.message);
     throw error;
