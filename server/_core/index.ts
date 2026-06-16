@@ -68,24 +68,28 @@ async function startServer() {
 
   // Debug endpoint to test DB connection and upsert
   app.get("/api/debug/db-test", async (_req, res) => {
+    const dbUrl = process.env.DATABASE_URL || '';
+    const dbUrlMasked = dbUrl ? dbUrl.replace(/:([^@]+)@/, ':***@').substring(0, 80) : 'NOT SET';
     try {
       const { getDb } = await import('../db.js');
       const db = await getDb();
       if (!db) {
-        return res.json({ ok: false, error: 'Database not available - DATABASE_URL may be missing' });
+        return res.json({ ok: false, error: 'Database not available - DATABASE_URL may be missing', dbUrlMasked });
       }
       // Try a simple select
       const { sql } = await import('drizzle-orm');
       const result = await db.execute(sql`SELECT current_database(), current_user, version()`);
-      res.json({ ok: true, dbInfo: result.rows ?? result });
+      res.json({ ok: true, dbInfo: result.rows ?? result, dbUrlMasked });
     } catch (error: any) {
       res.json({
         ok: false,
+        dbUrlMasked,
         error: error?.message,
         code: error?.code,
         detail: error?.detail,
         hint: error?.hint,
-        fullError: String(error),
+        stack: error?.stack?.substring(0, 500),
+        fullError: String(error).substring(0, 1000),
       });
     }
   });
