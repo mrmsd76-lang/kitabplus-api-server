@@ -1,0 +1,1 @@
+ALTER TABLE `payment_history` ADD `referralCode` varchar(32);
