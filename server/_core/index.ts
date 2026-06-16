@@ -66,6 +66,30 @@ async function startServer() {
     res.json({ ok: true, timestamp: Date.now() });
   });
 
+  // Debug endpoint to test DB connection and upsert
+  app.get("/api/debug/db-test", async (_req, res) => {
+    try {
+      const { getDb } = await import('../db.js');
+      const db = await getDb();
+      if (!db) {
+        return res.json({ ok: false, error: 'Database not available - DATABASE_URL may be missing' });
+      }
+      // Try a simple select
+      const { sql } = await import('drizzle-orm');
+      const result = await db.execute(sql`SELECT current_database(), current_user, version()`);
+      res.json({ ok: true, dbInfo: result.rows ?? result });
+    } catch (error: any) {
+      res.json({
+        ok: false,
+        error: error?.message,
+        code: error?.code,
+        detail: error?.detail,
+        hint: error?.hint,
+        fullError: String(error),
+      });
+    }
+  });
+
   // رابط تنزيل APK المخصص — يعيد التوجيه لأحدث إصدار على GitHub
   app.get("/download", (_req, res) => {
     res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
@@ -81,6 +105,17 @@ async function startServer() {
     createExpressMiddleware({
       router: appRouter,
       createContext,
+      onError({ error, type, path, input }) {
+        console.error(`[tRPC Error] ${type} ${path}:`, error.message);
+        if (error.cause) {
+          console.error('[tRPC Error] cause:', JSON.stringify(error.cause, null, 2));
+        }
+        // Log the full error object for PostgreSQL errors
+        const cause = error.cause as any;
+        if (cause?.code || cause?.constraint || cause?.detail) {
+          console.error('[DB Error] code:', cause.code, 'constraint:', cause.constraint, 'detail:', cause.detail, 'message:', cause.message);
+        }
+      },
     }),
   );
 
