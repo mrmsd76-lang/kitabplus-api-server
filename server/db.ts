@@ -1,8 +1,6 @@
 import { eq, sql, desc, and, count, or, isNull } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
 import { ENV } from "./_core/env";
-import { appInstalls, appUsers, discountCodes, paymentEvents, paymentHistory, pushTokens, users } from "../drizzle/schema";
+import { appInstalls, appUsers, discountCodes, paymentEvents, paymentHistory, pushTokens } from "../drizzle/schema";
 import type { AppInstall, AppUser, DiscountCode, InsertAppInstall, InsertAppUser, InsertDiscountCode, InsertPaymentHistoryRecord, InsertPaymentEvent, InsertUser, PaymentEvent, PaymentHistoryRecord, PushToken, User } from "../drizzle/schema";
 import {
   sbGetAppUserByEmail, sbGetAppUserById, sbCreateAppUser,
@@ -10,111 +8,39 @@ import {
   sbGetAllAppUsers, sbUpdateAppUserProfile, sbDeleteAppUser, sbUpdateBookSuggestions,
   sbGetUsersExpiringWithinDays, SbAppUser
 } from "./supabase-users";
-
-let _db: ReturnType<typeof drizzle> | null = null;
-
-// Lazily create the drizzle instance so local tooling can run without a DB.
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      const dbUrl = process.env.DATABASE_URL;
-      // Supabase Transaction Pooler (port 6543) requires ssl with rejectUnauthorized: false
-      // Direct connection (port 5432) uses ssl: "require"
-      const isPooler = dbUrl.includes(':6543');
-      const sslConfig = isPooler
-        ? { rejectUnauthorized: false }
-        : 'require';
-      console.log(`[Database] Connecting via ${isPooler ? 'Transaction Pooler' : 'Direct'} mode, SSL: ${JSON.stringify(sslConfig)}`);
-      const client = postgres(dbUrl, { ssl: sslConfig as any, max: 5 });
-      _db = drizzle(client);
-      console.log('[Database] Connection initialized successfully');
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
-}
+import { sbUpsertSessionUser, sbGetSessionUserByOpenId, type SessionUser } from "./supabase-session-users";
 
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = "admin";
-      updateSet.role = "admin";
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onConflictDoUpdate({
-      target: users.openId,
-      set: updateSet,
-    });
-  } catch (error: any) {
-    console.error("[Database] Failed to upsert user - full error:", {
-      message: error?.message,
-      code: error?.code,
-      constraint: error?.constraint,
-      detail: error?.detail,
-      hint: error?.hint,
-      table: error?.table,
-      column: error?.column,
-      query: error?.query,
-    });
-    throw error;
-  }
+  // Use Supabase REST API instead of direct PostgreSQL (avoids IPv6 issue on Render)
+  await sbUpsertSessionUser({
+    openId: user.openId,
+    name: user.name,
+    email: user.email,
+    loginMethod: user.loginMethod,
+    role: user.role ?? (user.openId === ENV.ownerOpenId ? 'admin' : undefined),
+    lastSignedIn: user.lastSignedIn instanceof Date ? user.lastSignedIn : user.lastSignedIn ? new Date(user.lastSignedIn as string) : undefined,
+  });
 }
 
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  return result.length > 0 ? result[0] : undefined;
+export async function getUserByOpenId(openId: string): Promise<User | undefined> {
+  // Use Supabase REST API instead of direct PostgreSQL (avoids IPv6 issue on Render)
+  const user = await sbGetSessionUserByOpenId(openId);
+  if (!user) return undefined;
+  // Map SessionUser to User shape
+  return {
+    id: user.id,
+    openId: user.openId,
+    name: user.name,
+    email: user.email,
+    loginMethod: user.loginMethod,
+    role: user.role as 'user' | 'admin',
+    createdAt: new Date(user.createdAt),
+    updatedAt: new Date(user.updatedAt),
+    lastSignedIn: new Date(user.lastSignedIn),
+  } as User;
 }
 
 // ── App Users (email/password auth) — via Supabase ──────────────────────────
