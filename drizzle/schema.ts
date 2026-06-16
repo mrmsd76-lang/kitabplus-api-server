@@ -10,7 +10,7 @@ export const users = pgTable("users", {
   name: text("name"),
   email: varchar("email", { length: 320 }),
   loginMethod: varchar("loginMethod", { length: 64 }),
-  role: pgEnum("role", ["user", "admin"]).default("user").notNull(),
+  role: text("role").notNull().default("user"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
   lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -25,7 +25,7 @@ export const appUsers = pgTable("app_users", {
   name: varchar("name", { length: 255 }).notNull(),
   email: varchar("email", { length: 320 }).notNull().unique(),
   password: varchar("password", { length: 255 }).notNull(),
-  isAdmin: pgEnum("isAdmin", ["0", "1"]).default("0").notNull(),
+  isAdmin: text("isAdmin").notNull().default("0"),
   subscriptionPlan: varchar("subscriptionPlan", { length: 32 }).default("free").notNull(),
   subscriptionExpiry: timestamp("subscriptionExpiry"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -42,7 +42,7 @@ export const discountCodes = pgTable("discount_codes", {
   discountPercent: integer("discountPercent").notNull(),
   maxUses: integer("maxUses"),
   usedCount: integer("usedCount").default(0).notNull(),
-  isActive: pgEnum("isActive", ["0", "1"]).default("1").notNull(),
+  isActive: text("isActive").notNull().default("1"),
   expiresAt: timestamp("expiresAt"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
@@ -91,7 +91,7 @@ export const paymentHistory = pgTable("payment_history", {
   amount: integer("amount").notNull(),                              // in halalas (SAR * 100)
   currency: varchar("currency", { length: 8 }).default("SAR").notNull(),
   plan: varchar("plan", { length: 32 }),                        // 'monthly' | 'yearly'
-  status: pgEnum("status", ["success", "failed", "pending", "refunded"]).notNull(),
+  status: text("status").notNull(),
   cardLast4: varchar("cardLast4", { length: 4 }),               // last 4 digits of card
   cardBrand: varchar("cardBrand", { length: 16 }),              // 'visa' | 'mastercard' | 'amex' | 'mada'
   referenceId: varchar("referenceId", { length: 128 }),         // our internal reference
