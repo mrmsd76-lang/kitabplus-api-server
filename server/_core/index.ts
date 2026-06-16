@@ -66,47 +66,44 @@ async function startServer() {
     res.json({ ok: true, timestamp: Date.now() });
   });
 
-  // Debug endpoint to test DB connection and upsert
+  // Debug endpoint to test Supabase REST API connectivity
   app.get("/api/debug/db-test", async (_req, res) => {
-    const dbUrl = process.env.DATABASE_URL || '';
-    const dbUrlMasked = dbUrl ? dbUrl.replace(/:([^@]+)@/, ':***@').substring(0, 100) : 'NOT SET';
-    const isPooler = dbUrl.includes(':6543');
+    const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL || '';
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+    const supabaseUrlMasked = supabaseUrl || 'NOT SET';
+    const serviceKeyMasked = serviceKey ? serviceKey.substring(0, 20) + '...' : 'NOT SET';
     
-    // Try direct postgres connection to get raw error
     try {
-      const postgres = (await import('postgres')).default;
-      const sslConfig = isPooler ? { rejectUnauthorized: false } : 'require';
-      const client = postgres(dbUrl, { ssl: sslConfig as any, max: 1, connect_timeout: 10 });
-      try {
-        const result = await client`SELECT current_database() as db, current_user as usr, version() as ver`;
-        await client.end();
-        return res.json({ ok: true, dbInfo: result, dbUrlMasked, isPooler });
-      } catch (queryErr: any) {
-        await client.end().catch(() => {});
-        return res.json({
-          ok: false,
-          phase: 'query',
-          dbUrlMasked,
-          isPooler,
-          error: queryErr?.message,
-          code: queryErr?.code,
-          detail: queryErr?.detail,
-          hint: queryErr?.hint,
-          severity: queryErr?.severity,
-          allKeys: Object.keys(queryErr || {}),
-          fullError: String(queryErr).substring(0, 2000),
-        });
-      }
-    } catch (connErr: any) {
+      // Test Supabase REST API by reading from users table
+      const { sbGetSessionUserByOpenId, sbUpsertSessionUser } = await import('../supabase-session-users.js');
+      
+      // Test upsert with a debug user
+      await sbUpsertSessionUser({
+        openId: 'debug_test_user',
+        name: 'Debug Test',
+        email: 'debug@test.com',
+        loginMethod: 'debug',
+        role: 'user',
+      });
+      
+      // Test read
+      const user = await sbGetSessionUserByOpenId('debug_test_user');
+      
+      return res.json({
+        ok: true,
+        supabaseUrlMasked,
+        serviceKeyMasked,
+        upsertOk: true,
+        readOk: !!user,
+        user: user ? { id: user.id, openId: user.openId, name: user.name } : null,
+      });
+    } catch (error: any) {
       return res.json({
         ok: false,
-        phase: 'connection',
-        dbUrlMasked,
-        isPooler,
-        error: connErr?.message,
-        code: connErr?.code,
-        allKeys: Object.keys(connErr || {}),
-        fullError: String(connErr).substring(0, 2000),
+        supabaseUrlMasked,
+        serviceKeyMasked,
+        error: error?.message,
+        fullError: String(error).substring(0, 2000),
       });
     }
   });
