@@ -17,8 +17,17 @@ let _db: ReturnType<typeof drizzle> | null = null;
 export async function getDb() {
   if (!_db && process.env.DATABASE_URL) {
     try {
-      const client = postgres(process.env.DATABASE_URL, { ssl: "require", max: 5 });
+      const dbUrl = process.env.DATABASE_URL;
+      // Supabase Transaction Pooler (port 6543) requires ssl with rejectUnauthorized: false
+      // Direct connection (port 5432) uses ssl: "require"
+      const isPooler = dbUrl.includes(':6543');
+      const sslConfig = isPooler
+        ? { rejectUnauthorized: false }
+        : 'require';
+      console.log(`[Database] Connecting via ${isPooler ? 'Transaction Pooler' : 'Direct'} mode, SSL: ${JSON.stringify(sslConfig)}`);
+      const client = postgres(dbUrl, { ssl: sslConfig as any, max: 5 });
       _db = drizzle(client);
+      console.log('[Database] Connection initialized successfully');
     } catch (error) {
       console.warn("[Database] Failed to connect:", error);
       _db = null;
