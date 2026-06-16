@@ -69,27 +69,44 @@ async function startServer() {
   // Debug endpoint to test DB connection and upsert
   app.get("/api/debug/db-test", async (_req, res) => {
     const dbUrl = process.env.DATABASE_URL || '';
-    const dbUrlMasked = dbUrl ? dbUrl.replace(/:([^@]+)@/, ':***@').substring(0, 80) : 'NOT SET';
+    const dbUrlMasked = dbUrl ? dbUrl.replace(/:([^@]+)@/, ':***@').substring(0, 100) : 'NOT SET';
+    const isPooler = dbUrl.includes(':6543');
+    
+    // Try direct postgres connection to get raw error
     try {
-      const { getDb } = await import('../db.js');
-      const db = await getDb();
-      if (!db) {
-        return res.json({ ok: false, error: 'Database not available - DATABASE_URL may be missing', dbUrlMasked });
+      const postgres = (await import('postgres')).default;
+      const sslConfig = isPooler ? { rejectUnauthorized: false } : 'require';
+      const client = postgres(dbUrl, { ssl: sslConfig as any, max: 1, connect_timeout: 10 });
+      try {
+        const result = await client`SELECT current_database() as db, current_user as usr, version() as ver`;
+        await client.end();
+        return res.json({ ok: true, dbInfo: result, dbUrlMasked, isPooler });
+      } catch (queryErr: any) {
+        await client.end().catch(() => {});
+        return res.json({
+          ok: false,
+          phase: 'query',
+          dbUrlMasked,
+          isPooler,
+          error: queryErr?.message,
+          code: queryErr?.code,
+          detail: queryErr?.detail,
+          hint: queryErr?.hint,
+          severity: queryErr?.severity,
+          allKeys: Object.keys(queryErr || {}),
+          fullError: String(queryErr).substring(0, 2000),
+        });
       }
-      // Try a simple select
-      const { sql } = await import('drizzle-orm');
-      const result = await db.execute(sql`SELECT current_database(), current_user, version()`);
-      res.json({ ok: true, dbInfo: result.rows ?? result, dbUrlMasked });
-    } catch (error: any) {
-      res.json({
+    } catch (connErr: any) {
+      return res.json({
         ok: false,
+        phase: 'connection',
         dbUrlMasked,
-        error: error?.message,
-        code: error?.code,
-        detail: error?.detail,
-        hint: error?.hint,
-        stack: error?.stack?.substring(0, 500),
-        fullError: String(error).substring(0, 1000),
+        isPooler,
+        error: connErr?.message,
+        code: connErr?.code,
+        allKeys: Object.keys(connErr || {}),
+        fullError: String(connErr).substring(0, 2000),
       });
     }
   });
