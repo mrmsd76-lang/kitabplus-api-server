@@ -108,6 +108,28 @@ async function startServer() {
     }
   });
 
+  // Debug endpoint to test sbGetAllAppUsers with service role key
+  app.get("/api/debug/users-test", async (_req, res) => {
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+    const serviceKeyMasked = serviceKey ? serviceKey.substring(0, 20) + '...' : 'NOT SET';
+    try {
+      const { sbGetAllAppUsers } = await import('../supabase-users.js');
+      const users = await sbGetAllAppUsers();
+      return res.json({
+        ok: true,
+        serviceKeyMasked,
+        userCount: users.length,
+        firstUser: users[0] ? { id: users[0].id, name: users[0].name, email: users[0].email } : null,
+      });
+    } catch (error: any) {
+      return res.json({
+        ok: false,
+        serviceKeyMasked,
+        error: error?.message,
+      });
+    }
+  });
+
   // رابط تنزيل APK المخصص — يعيد التوجيه لأحدث إصدار على GitHub
   app.get("/download", (_req, res) => {
     res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
