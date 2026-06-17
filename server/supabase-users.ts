@@ -51,9 +51,11 @@ export type SbAppUser = {
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 // يستخدم service role key للعمليات الكتابية (PATCH/POST/DELETE) لتجاوز RLS
-async function sbFetch(path: string, options?: RequestInit): Promise<any> {
+async function sbFetch(path: string, options?: RequestInit & { _forceServiceKey?: boolean }): Promise<any> {
   const isWrite = options?.method && ['PATCH','POST','PUT','DELETE'].includes(options.method.toUpperCase());
-  const headers = isWrite ? SB_WRITE_HEADERS : SB_READ_HEADERS;
+  const forceServiceKey = (options as any)?._forceServiceKey === true;
+  const headers = (isWrite || forceServiceKey) ? SB_WRITE_HEADERS : SB_READ_HEADERS;
+  if (options) delete (options as any)._forceServiceKey;
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
     ...options,
     headers: { ...headers, ...(options?.headers ?? {}) },
@@ -121,7 +123,8 @@ export async function sbUpdateAppUserPassword(id: number, hashedPassword: string
 }
 
 export async function sbGetAllAppUsers(): Promise<SbAppUser[]> {
-  return sbFetch("app_users?select=*&order=created_at.asc");
+  // يستخدم service role key لتجاوز RLS وقراءة جميع المستخدمين
+  return sbFetch("app_users?select=*&order=created_at.asc", { method: 'GET', _forceServiceKey: true } as any);
 }
 
 export async function sbUpdateAppUserProfile(
