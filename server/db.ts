@@ -1,5 +1,22 @@
 import { eq, sql, desc, and, count, or, isNull } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
 import { ENV } from "./_core/env";
+
+let _db: ReturnType<typeof drizzle> | null = null;
+// Lazily create the drizzle instance — uses Supabase connection pooler (IPv4 compatible)
+export async function getDb() {
+  if (!_db && process.env.DATABASE_URL) {
+    try {
+      const client = postgres(process.env.DATABASE_URL, { ssl: "require", max: 5 });
+      _db = drizzle(client);
+    } catch (error) {
+      console.warn("[Database] Failed to connect:", error);
+      _db = null;
+    }
+  }
+  return _db;
+}
 import { appInstalls, appUsers, discountCodes, paymentEvents, paymentHistory, pushTokens } from "../drizzle/schema";
 import type { AppInstall, AppUser, DiscountCode, InsertAppInstall, InsertAppUser, InsertDiscountCode, InsertPaymentHistoryRecord, InsertPaymentEvent, InsertUser, PaymentEvent, PaymentHistoryRecord, PushToken, User } from "../drizzle/schema";
 import {
