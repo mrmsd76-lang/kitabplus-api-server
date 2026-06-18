@@ -130,103 +130,23 @@ async function startServer() {
     }
   });
 
-  // Debug endpoint to test PostgreSQL (getDb) connectivity
-  app.get("/api/debug/pg-test", async (_req, res) => {
-    const dbUrl = process.env.DATABASE_URL || '';
-    const dbUrlMasked = dbUrl ? dbUrl.substring(0, 30) + '...' : 'NOT SET';
+  // Debug endpoint to test Supabase REST connectivity
+  app.get("/api/debug/rest-test", async (_req, res) => {
     try {
-      const { getDb } = await import('../db.js');
-      const db = await getDb();
-      if (!db) {
-        return res.json({ ok: false, dbUrlMasked, error: 'getDb() returned null - DATABASE_URL may not be set' });
-      }
-      // Try a simple query
-      const result = await db.execute({ sql: 'SELECT current_database(), current_schema()' });
-      return res.json({ ok: true, dbUrlMasked, result: result.rows?.[0] || result });
-    } catch (error: any) {
-      return res.json({ ok: false, dbUrlMasked, error: error?.message });
-    }
-  });
-
-  // Debug endpoint to create missing tables
-  app.get("/api/debug/create-tables", async (_req, res) => {
-    try {
-      const { getDb } = await import('../db.js');
-      const db = await getDb();
-      if (!db) {
-        return res.json({ ok: false, error: 'getDb() returned null' });
-      }
-      // Create discount_codes table
-      await db.execute({ sql: `CREATE TABLE IF NOT EXISTS discount_codes (
-        id SERIAL PRIMARY KEY,
-        code VARCHAR(64) NOT NULL UNIQUE,
-        "discountPercent" INTEGER NOT NULL DEFAULT 10,
-        "maxUses" INTEGER NOT NULL DEFAULT 100,
-        "usedCount" INTEGER NOT NULL DEFAULT 0,
-        "isActive" VARCHAR(1) NOT NULL DEFAULT '1',
-        "expiresAt" TIMESTAMP,
-        "createdAt" TIMESTAMP DEFAULT NOW() NOT NULL
-      )` });
-      // Create app_installs table
-      await db.execute({ sql: `CREATE TABLE IF NOT EXISTS app_installs (
-        id SERIAL PRIMARY KEY,
-        "deviceId" VARCHAR(128) NOT NULL UNIQUE,
-        "appVersion" VARCHAR(32),
-        platform VARCHAR(16),
-        "deviceModel" VARCHAR(64),
-        country VARCHAR(8),
-        "firstOpenAt" TIMESTAMP DEFAULT NOW() NOT NULL,
-        "lastOpenAt" TIMESTAMP DEFAULT NOW() NOT NULL,
-        "openCount" INTEGER DEFAULT 1 NOT NULL
-      )` });
-      // Create payment_events table
-      await db.execute({ sql: `CREATE TABLE IF NOT EXISTS payment_events (
-        id SERIAL PRIMARY KEY,
-        gateway VARCHAR(32) NOT NULL,
-        "eventType" VARCHAR(64) NOT NULL,
-        "chargeId" VARCHAR(128) NOT NULL,
-        "orderId" VARCHAR(128),
-        "customerEmail" VARCHAR(320),
-        amount INTEGER,
-        currency VARCHAR(8),
-        plan VARCHAR(32),
-        "userId" INTEGER,
-        status VARCHAR(32) NOT NULL,
-        "errorMessage" TEXT,
-        "rawPayload" TEXT,
-        "createdAt" TIMESTAMP DEFAULT NOW() NOT NULL
-      )` });
-      // Create payment_history table
-      await db.execute({ sql: `CREATE TABLE IF NOT EXISTS payment_history (
-        id SERIAL PRIMARY KEY,
-        "userId" INTEGER,
-        "customerEmail" VARCHAR(255),
-        gateway VARCHAR(32) NOT NULL,
-        "chargeId" VARCHAR(128),
-        amount INTEGER NOT NULL,
-        currency VARCHAR(8) DEFAULT 'SAR' NOT NULL,
-        plan VARCHAR(32),
-        status TEXT NOT NULL,
-        "cardLast4" VARCHAR(4),
-        "cardBrand" VARCHAR(16),
-        "referenceId" VARCHAR(128),
-        "errorMessage" TEXT,
-        "createdAt" TIMESTAMP DEFAULT NOW() NOT NULL
-      )` });
-      // Create push_tokens table
-      await db.execute({ sql: `CREATE TABLE IF NOT EXISTS push_tokens (
-        id SERIAL PRIMARY KEY,
-        "userId" INTEGER NOT NULL,
-        token VARCHAR(512) NOT NULL UNIQUE,
-        platform VARCHAR(16),
-        "createdAt" TIMESTAMP DEFAULT NOW() NOT NULL,
-        "updatedAt" TIMESTAMP DEFAULT NOW() NOT NULL
-      )` });
-      return res.json({ ok: true, message: 'All tables created successfully' });
+      const { getAllDiscountCodes, getInstallStats } = await import('../db.js');
+      const discounts = await getAllDiscountCodes();
+      const installs = await getInstallStats();
+      return res.json({
+        ok: true,
+        discountCount: discounts.length,
+        installCount: installs.total,
+        message: 'Supabase REST API is working correctly'
+      });
     } catch (error: any) {
       return res.json({ ok: false, error: error?.message });
     }
   });
+
 
   // رابط تنزيل APK المخصص — يعيد التوجيه لأحدث إصدار على GitHub
   app.get("/download", (_req, res) => {
@@ -273,4 +193,5 @@ async function startServer() {
 }
 
 startServer().catch(console.error);
+
 
