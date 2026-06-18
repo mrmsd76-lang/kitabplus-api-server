@@ -1,24 +1,9 @@
-import { eq, sql, desc, and, count, or, isNull } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
+/**
+ * db.ts — Supabase REST API layer
+ * All database operations use Supabase PostgREST instead of direct PostgreSQL connection.
+ * This avoids IPv6/IPv4 connectivity issues on Render.
+ */
 import { ENV } from "./_core/env";
-
-let _db: ReturnType<typeof drizzle> | null = null;
-// Lazily create the drizzle instance — uses Supabase connection pooler (IPv4 compatible)
-export async function getDb() {
-  if (!_db && process.env.DATABASE_URL) {
-    try {
-      const client = postgres(process.env.DATABASE_URL, { ssl: "require", max: 5 });
-      _db = drizzle(client);
-    } catch (error) {
-      console.warn("[Database] Failed to connect:", error);
-      _db = null;
-    }
-  }
-  return _db;
-}
-import { appInstalls, appUsers, discountCodes, paymentEvents, paymentHistory, pushTokens } from "../drizzle/schema";
-import type { AppInstall, AppUser, DiscountCode, InsertAppInstall, InsertAppUser, InsertDiscountCode, InsertPaymentHistoryRecord, InsertPaymentEvent, InsertUser, PaymentEvent, PaymentHistoryRecord, PushToken, User } from "../drizzle/schema";
 import {
   sbGetAppUserByEmail, sbGetAppUserById, sbCreateAppUser,
   sbUpdateAppUserSubscription, sbUpdateAppUserPassword,
@@ -27,11 +12,45 @@ import {
 } from "./supabase-users";
 import { sbUpsertSessionUser, sbGetSessionUserByOpenId, type SessionUser } from "./supabase-session-users";
 
+// Re-export types for backward compatibility
+import type { AppInstall, AppUser, DiscountCode, InsertAppInstall, InsertAppUser, InsertDiscountCode, InsertPaymentHistoryRecord, InsertPaymentEvent, InsertUser, PaymentEvent, PaymentHistoryRecord, PushToken, User } from "../drizzle/schema";
+
+// ─── Supabase REST API Setup ─────────────────────────────────────────────────
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? '';
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? '';
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? SUPABASE_ANON_KEY;
+
+const SB_HEADERS = {
+  apikey: SUPABASE_SERVICE_KEY,
+  Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+  "Content-Type": "application/json",
+  Prefer: "return=representation",
+};
+
+/** Generic Supabase REST fetch helper — always uses service role key */
+async function sbFetch(path: string, options?: RequestInit): Promise<any> {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: { ...SB_HEADERS, ...(options?.headers ?? {}) },
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    console.warn(`[sbFetch] Error ${res.status}: ${text.substring(0, 200)}`);
+    throw new Error(`Supabase REST error: ${res.status} - ${text.substring(0, 200)}`);
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+// ─── Legacy getDb (returns null — kept for backward compat) ──────────────────
+export async function getDb() {
+  return null;
+}
+
+// ─── Users (OAuth login) ─────────────────────────────────────────────────────
 export async function upsertUser(user: InsertUser): Promise<void> {
   if (!user.openId) {
     throw new Error("User openId is required for upsert");
   }
-  // Use Supabase REST API instead of direct PostgreSQL (avoids IPv6 issue on Render)
   await sbUpsertSessionUser({
     openId: user.openId,
     name: user.name,
@@ -43,10 +62,8 @@ export async function upsertUser(user: InsertUser): Promise<void> {
 }
 
 export async function getUserByOpenId(openId: string): Promise<User | undefined> {
-  // Use Supabase REST API instead of direct PostgreSQL (avoids IPv6 issue on Render)
   const user = await sbGetSessionUserByOpenId(openId);
   if (!user) return undefined;
-  // Map SessionUser to User shape
   return {
     id: user.id,
     openId: user.openId,
@@ -61,7 +78,6 @@ export async function getUserByOpenId(openId: string): Promise<User | undefined>
 }
 
 // ── App Users (email/password auth) — via Supabase ──────────────────────────
-// Map SbAppUser → AppUser shape for backward compatibility
 function mapSbUser(u: SbAppUser): AppUser {
   return {
     id: u.id,
@@ -104,57 +120,74 @@ export async function updateAppUserSubscription(
   await sbUpdateAppUserSubscription(id, plan, expiry);
 }
 
-// ── Discount Codes ────────────────────────────────────────────────────────────
+// ── Discount Codes (via Supabase REST) ───────────────────────────────────────
 export async function getDiscountCodeByCode(code: string): Promise<DiscountCode | undefined> {
-  const db = await getDb();
-  if (!db) return undefined;
-  const result = await db.select().from(discountCodes)
-    .where(eq(discountCodes.code, code.toUpperCase().trim()))
-    .limit(1);
-  return result.length > 0 ? result[0] : undefined;
+  const rows = await sbFetch(`discount_codes?code=eq.${encodeURIComponent(code.toUpperCase().trim())}&limit=1`);
+  if (!rows || rows.length === 0) return undefined;
+  return mapDiscountRow(rows[0]);
 }
 
 export async function createDiscountCode(data: InsertDiscountCode): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const result = await db.insert(discountCodes).values({
-    ...data,
-    code: data.code.toUpperCase().trim(),
+  const rows = await sbFetch('discount_codes', {
+    method: 'POST',
+    body: JSON.stringify({
+      code: data.code.toUpperCase().trim(),
+      "discountPercent": data.discountPercent ?? 10,
+      "maxUses": data.maxUses ?? 100,
+      "usedCount": 0,
+      "isActive": data.isActive ?? '1',
+      "expiresAt": data.expiresAt ?? null,
+    }),
   });
-  return (result as any).insertId as number;
+  return rows?.[0]?.id ?? 0;
 }
 
 export async function incrementDiscountCodeUsage(id: number): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(discountCodes)
-    .set({ usedCount: sql`${discountCodes.usedCount} + 1` })
-    .where(eq(discountCodes.id, id));
+  // First get current count
+  const rows = await sbFetch(`discount_codes?id=eq.${id}&select=usedCount`);
+  if (!rows || rows.length === 0) return;
+  const current = rows[0].usedCount ?? 0;
+  await sbFetch(`discount_codes?id=eq.${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ "usedCount": current + 1 }),
+  });
 }
 
 export async function getAllDiscountCodes(): Promise<DiscountCode[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return await db.select().from(discountCodes).orderBy(discountCodes.createdAt);
+  const rows = await sbFetch('discount_codes?order=createdAt.asc');
+  if (!rows) return [];
+  return rows.map(mapDiscountRow);
 }
 
 export async function toggleDiscountCodeStatus(id: number, isActive: '0' | '1'): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.update(discountCodes).set({ isActive }).where(eq(discountCodes.id, id));
+  await sbFetch(`discount_codes?id=eq.${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ "isActive": isActive }),
+  });
 }
 
 export async function deleteDiscountCode(id: number): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  await db.delete(discountCodes).where(eq(discountCodes.id, id));
+  await sbFetch(`discount_codes?id=eq.${id}`, { method: 'DELETE' });
 }
 
+function mapDiscountRow(r: any): DiscountCode {
+  return {
+    id: r.id,
+    code: r.code,
+    discountPercent: r.discountPercent,
+    maxUses: r.maxUses,
+    usedCount: r.usedCount,
+    isActive: r.isActive,
+    expiresAt: r.expiresAt ? new Date(r.expiresAt) : null,
+    createdAt: new Date(r.createdAt),
+  } as DiscountCode;
+}
+
+// ── App User Management ──────────────────────────────────────────────────────
 export async function updateAppUserPassword(id: number, hashedPassword: string): Promise<void> {
   await sbUpdateAppUserPassword(id, hashedPassword);
 }
 
-// ── Admin: User Management ────────────────────────────────────────────────────────────
 export async function getAllAppUsers(): Promise<AppUser[]> {
   const users = await sbGetAllAppUsers();
   return users.map(mapSbUser);
@@ -182,273 +215,313 @@ export async function updateBookSuggestions(
   await sbUpdateBookSuggestions(userId, suggestions);
 }
 
-/** جلب المستخدمين الذين ينتهي اشتراكهم خلال N يوماً القادمة */
 export async function getUsersExpiringWithinDays(days: number): Promise<AppUser[]> {
   const users = await sbGetUsersExpiringWithinDays(days);
   return users.map(mapSbUser);
 }
 
-// ── Payment Events ────────────────────────────────────────────────────────────
+// ── Payment Events (via Supabase REST) ───────────────────────────────────────
 export async function insertPaymentEvent(data: InsertPaymentEvent): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error('Database not available');
-  const result = await db.insert(paymentEvents).values(data);
-  return (result as any).insertId as number;
+  const rows = await sbFetch('payment_events', {
+    method: 'POST',
+    body: JSON.stringify({
+      gateway: data.gateway,
+      "eventType": data.eventType,
+      "chargeId": data.chargeId,
+      "orderId": data.orderId ?? null,
+      "customerEmail": data.customerEmail ?? null,
+      amount: data.amount ?? null,
+      currency: data.currency ?? null,
+      plan: data.plan ?? null,
+      "userId": data.userId ?? null,
+      status: data.status,
+      "errorMessage": data.errorMessage ?? null,
+      "rawPayload": data.rawPayload ?? null,
+    }),
+  });
+  return rows?.[0]?.id ?? 0;
 }
 
 export async function getPaymentEvents(limit = 100): Promise<PaymentEvent[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentEvents).orderBy(paymentEvents.createdAt).limit(limit);
+  const rows = await sbFetch(`payment_events?order=createdAt.asc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentEventRow);
 }
 
 export async function getPaymentEventsByEmail(email: string): Promise<PaymentEvent[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentEvents)
-    .where(eq(paymentEvents.customerEmail, email))
-    .orderBy(paymentEvents.createdAt);
+  const rows = await sbFetch(`payment_events?customerEmail=eq.${encodeURIComponent(email)}&order=createdAt.asc`);
+  if (!rows) return [];
+  return rows.map(mapPaymentEventRow);
 }
 
-// ── Push Tokens ────────────────────────────────────────────────────────────
-/** حفظ أو تحديث Push Token لمستخدم */
+function mapPaymentEventRow(r: any): PaymentEvent {
+  return {
+    ...r,
+    createdAt: new Date(r.createdAt),
+  } as PaymentEvent;
+}
+
+// ── Push Tokens (via Supabase REST) ──────────────────────────────────────────
 export async function upsertPushToken(userId: number, token: string, platform?: string): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  // حذف التوكن القديم لهذا المستخدم إن وجد
-  await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
-  // حفظ التوكن الجديد
-  await db.insert(pushTokens).values({ userId, token, platform: platform ?? null });
+  // Delete old token for this user
+  await sbFetch(`push_tokens?userId=eq.${userId}`, { method: 'DELETE' });
+  // Insert new token
+  await sbFetch('push_tokens', {
+    method: 'POST',
+    body: JSON.stringify({
+      "userId": userId,
+      token,
+      platform: platform ?? null,
+    }),
+  });
 }
 
-/** جلب Push Token لمستخدم محدد */
 export async function getPushTokenByUserId(userId: number): Promise<PushToken | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(pushTokens).where(eq(pushTokens.userId, userId)).limit(1);
-  return rows[0] ?? null;
+  const rows = await sbFetch(`push_tokens?userId=eq.${userId}&limit=1`);
+  if (!rows || rows.length === 0) return null;
+  return mapPushTokenRow(rows[0]);
 }
 
-/** جلب جميع Push Tokens للمستخدمين الذين ينتهي اشتراكهم خلال N أيام */
 export async function getPushTokensForExpiringUsers(days: number): Promise<Array<{ userId: number; token: string; name: string; email: string; subscriptionExpiry: Date }>> {
-  const db = await getDb();
-  if (!db) return [];
+  // Get all push tokens
+  const tokens = await sbFetch('push_tokens?select=userId,token');
+  if (!tokens || tokens.length === 0) return [];
+  
+  // Get all app users with subscriptions
+  const users = await sbGetAllAppUsers();
   const now = new Date();
   const future = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
-  const rows = await db
-    .select({
-      userId: appUsers.id,
-      token: pushTokens.token,
-      name: appUsers.name,
-      email: appUsers.email,
-      subscriptionExpiry: appUsers.subscriptionExpiry,
-    })
-    .from(appUsers)
-    .innerJoin(pushTokens, eq(appUsers.id, pushTokens.userId))
-    .where(sql`${appUsers.subscriptionExpiry} IS NOT NULL
-      AND ${appUsers.subscriptionExpiry} > ${now}
-      AND ${appUsers.subscriptionExpiry} <= ${future}
-      AND ${appUsers.subscriptionPlan} != 'free'`);
-  return rows.map(r => ({
-    userId: r.userId,
-    token: r.token,
-    name: r.name ?? 'عزيزي المشترك',
-    email: r.email,
-    subscriptionExpiry: r.subscriptionExpiry!,
-  }));
+  
+  // Filter users whose subscription expires within the range
+  const tokenMap = new Map<number, string>();
+  for (const t of tokens) {
+    tokenMap.set(t.userId, t.token);
+  }
+  
+  const results: Array<{ userId: number; token: string; name: string; email: string; subscriptionExpiry: Date }> = [];
+  for (const u of users) {
+    if (!u.subscription_expiry || u.subscription_plan === 'free') continue;
+    const expiry = new Date(u.subscription_expiry);
+    if (expiry > now && expiry <= future) {
+      const token = tokenMap.get(u.id);
+      if (token) {
+        results.push({
+          userId: u.id,
+          token,
+          name: u.name || 'عزيزي المشترك',
+          email: u.email,
+          subscriptionExpiry: expiry,
+        });
+      }
+    }
+  }
+  return results;
 }
 
-/** جلب Push Tokens لجميع المشتركين النشطين (لإرسال إشعارات جماعية) */
 export async function getAllSubscriberPushTokens(): Promise<Array<{ userId: number; token: string; name: string }>> {
-  const db = await getDb();
-  if (!db) return [];
-  const rows = await db
-    .select({
-      userId: appUsers.id,
-      token: pushTokens.token,
-      name: appUsers.name,
-    })
-    .from(appUsers)
-    .innerJoin(pushTokens, eq(appUsers.id, pushTokens.userId))
-    .where(sql`${appUsers.subscriptionPlan} != 'free'
-      AND ${appUsers.subscriptionExpiry} IS NOT NULL
-      AND ${appUsers.subscriptionExpiry} > NOW()`);
-  return rows.map(r => ({
-    userId: r.userId,
-    token: r.token,
-    name: r.name ?? 'عزيزي المشترك',
-  }));
+  const tokens = await sbFetch('push_tokens?select=userId,token');
+  if (!tokens || tokens.length === 0) return [];
+  
+  const users = await sbGetAllAppUsers();
+  const now = new Date();
+  const tokenMap = new Map<number, string>();
+  for (const t of tokens) {
+    tokenMap.set(t.userId, t.token);
+  }
+  
+  const results: Array<{ userId: number; token: string; name: string }> = [];
+  for (const u of users) {
+    if (u.subscription_plan === 'free') continue;
+    if (!u.subscription_expiry) continue;
+    const expiry = new Date(u.subscription_expiry);
+    if (expiry <= now) continue;
+    const token = tokenMap.get(u.id);
+    if (token) {
+      results.push({ userId: u.id, token, name: u.name || 'عزيزي المشترك' });
+    }
+  }
+  return results;
 }
 
-/** جلب Push Tokens للمدراء (isAdmin = '1') */
 export async function getAdminPushTokens(): Promise<Array<{ userId: number; token: string; name: string }>> {
-  const db = await getDb();
-  if (!db) return [];
-  const rows = await db
-    .select({
-      userId: appUsers.id,
-      token: pushTokens.token,
-      name: appUsers.name,
-    })
-    .from(appUsers)
-    .innerJoin(pushTokens, eq(appUsers.id, pushTokens.userId))
-    .where(eq(appUsers.isAdmin, '1'));
-  return rows.map(r => ({
+  const tokens = await sbFetch('push_tokens?select=userId,token');
+  if (!tokens || tokens.length === 0) return [];
+  
+  const users = await sbGetAllAppUsers();
+  const tokenMap = new Map<number, string>();
+  for (const t of tokens) {
+    tokenMap.set(t.userId, t.token);
+  }
+  
+  const results: Array<{ userId: number; token: string; name: string }> = [];
+  for (const u of users) {
+    if (!u.is_admin) continue;
+    const token = tokenMap.get(u.id);
+    if (token) {
+      results.push({ userId: u.id, token, name: u.name || 'المدير' });
+    }
+  }
+  return results;
+}
+
+export async function deletePushToken(userId: number): Promise<void> {
+  await sbFetch(`push_tokens?userId=eq.${userId}`, { method: 'DELETE' });
+}
+
+function mapPushTokenRow(r: any): PushToken {
+  return {
+    id: r.id,
     userId: r.userId,
     token: r.token,
-    name: r.name ?? 'المدير',
-  }));
+    platform: r.platform,
+    createdAt: new Date(r.createdAt),
+    updatedAt: new Date(r.updatedAt),
+  } as PushToken;
 }
 
-/** حذف Push Token لمستخدم */
-export async function deletePushToken(userId: number): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.delete(pushTokens).where(eq(pushTokens.userId, userId));
-}
-
-// ── Payment History ──────────────────────────────────────────────────────────────
-/** حفظ سجل دفعة جديدة */
+// ── Payment History (via Supabase REST) ──────────────────────────────────────
 export async function insertPaymentHistory(data: InsertPaymentHistoryRecord): Promise<number> {
-  const db = await getDb();
-  if (!db) throw new Error('Database not available');
-  const result = await db.insert(paymentHistory).values(data);
-  return (result as any).insertId as number;
+  const rows = await sbFetch('payment_history', {
+    method: 'POST',
+    body: JSON.stringify({
+      "userId": data.userId ?? null,
+      "customerEmail": data.customerEmail ?? null,
+      gateway: data.gateway,
+      "chargeId": data.chargeId ?? null,
+      amount: data.amount,
+      currency: data.currency ?? 'SAR',
+      plan: data.plan ?? null,
+      status: data.status,
+      "cardLast4": data.cardLast4 ?? null,
+      "cardBrand": data.cardBrand ?? null,
+      "referenceId": data.referenceId ?? null,
+      "errorMessage": data.errorMessage ?? null,
+    }),
+  });
+  return rows?.[0]?.id ?? 0;
 }
 
-/** جلب سجل دفعات مستخدم محدد (بالـ userId أو بالبريد الإلكتروني) */
 export async function getPaymentHistoryByUserId(userId: number, limit = 50): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  // جلب بيانات المستخدم للحصول على بريده الإلكتروني
   const user = await getAppUserById(userId);
   const userEmail = user?.email;
-  // جلب السجلات بالـ userId أو بالبريد الإلكتروني (لدعم الطلبات المُرسلة قبل تسجيل الدخول)
-  const condition = userEmail
-    ? or(eq(paymentHistory.userId, userId), eq(paymentHistory.customerEmail, userEmail))
-    : eq(paymentHistory.userId, userId);
-  return db.select().from(paymentHistory)
-    .where(condition)
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  
+  let rows: any[];
+  if (userEmail) {
+    rows = await sbFetch(`payment_history?or=(userId.eq.${userId},customerEmail.eq.${encodeURIComponent(userEmail)})&order=createdAt.desc&limit=${limit}`);
+  } else {
+    rows = await sbFetch(`payment_history?userId=eq.${userId}&order=createdAt.desc&limit=${limit}`);
+  }
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** حذف سجل دفع بواسطة id */
 export async function deletePaymentHistoryById(id: number): Promise<boolean> {
-  const db = await getDb();
-  if (!db) return false;
-  const result = await db.delete(paymentHistory).where(eq(paymentHistory.id, id));
-  const [header] = result as unknown as [{ affectedRows: number }, unknown];
-  return (header.affectedRows ?? 0) > 0;
+  try {
+    await sbFetch(`payment_history?id=eq.${id}`, { method: 'DELETE' });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** جلب سجلات الدفع بالبريد الإلكتروني مباشرة، بغض النظر عن userId */
 export async function getPaymentHistoryByEmail(email: string, limit = 50): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(eq(paymentHistory.customerEmail, email.toLowerCase().trim()))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?customerEmail=eq.${encodeURIComponent(email.toLowerCase().trim())}&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** جلب جميع سجلات الدفع (للمدير) */
 export async function getAllPaymentHistory(limit = 200): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** جلب طلبات STC Pay المعلّقة (للمدير) */
 export async function getPendingStcPayments(limit = 100): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(and(eq(paymentHistory.gateway, 'stcpay'), eq(paymentHistory.status, 'pending')))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?gateway=eq.stcpay&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** جلب طلبات PayPal المعلّقة */
 export async function getPendingPayPalPayments(limit = 100): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(and(eq(paymentHistory.gateway, 'paypal'), eq(paymentHistory.status, 'pending')))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?gateway=eq.paypal&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** جلب طلبات Wise المعلّقة */
 export async function getPendingWisePayments(limit = 100): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(and(eq(paymentHistory.gateway, 'wise'), eq(paymentHistory.status, 'pending')))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?gateway=eq.wise&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** جلب طلبات IBAN المعلّقة */
 export async function getPendingCryptoPayments(limit = 100): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(and(eq(paymentHistory.gateway, 'crypto'), eq(paymentHistory.status, 'pending')))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?gateway=eq.crypto&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
 export async function getPendingIbanPayments(limit = 100): Promise<PaymentHistoryRecord[]> {
-  const db = await getDb();
-  if (!db) return [];
-  return db.select().from(paymentHistory)
-    .where(and(eq(paymentHistory.gateway, 'iban'), eq(paymentHistory.status, 'pending')))
-    .orderBy(desc(paymentHistory.createdAt))
-    .limit(limit);
+  const rows = await sbFetch(`payment_history?gateway=eq.iban&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
 }
 
-/** تحديث حالة سجل دفعة محددة */
 export async function updatePaymentHistoryStatus(
   id: number,
   status: 'success' | 'failed' | 'pending' | 'refunded'
 ): Promise<void> {
-  const db = await getDb();
-  if (!db) throw new Error('Database not available');
-  await db.update(paymentHistory).set({ status }).where(eq(paymentHistory.id, id));
+  await sbFetch(`payment_history?id=eq.${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
 }
 
-/** جلب سجل دفع واحد بالمعرف */
 export async function getPaymentHistoryById(id: number): Promise<PaymentHistoryRecord | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(paymentHistory).where(eq(paymentHistory.id, id)).limit(1);
-  return rows[0] ?? null;
+  const rows = await sbFetch(`payment_history?id=eq.${id}&limit=1`);
+  if (!rows || rows.length === 0) return null;
+  return mapPaymentHistoryRow(rows[0]);
 }
 
-// ── App Installs / First Opens ────────────────────────────────────────────────
+function mapPaymentHistoryRow(r: any): PaymentHistoryRecord {
+  return {
+    ...r,
+    createdAt: new Date(r.createdAt),
+  } as PaymentHistoryRecord;
+}
 
-/** تسجيل فتح التطبيق — يُنشئ سجلاً جديداً في أول فتح، ويحدّث العداد في كل فتح لاحق */
+// ── App Installs (via Supabase REST) ─────────────────────────────────────────
 export async function recordAppInstall(data: InsertAppInstall): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
   try {
-    await db.insert(appInstalls).values(data).onConflictDoUpdate({
-      target: appInstalls.deviceId,
-      set: {
-        lastOpenAt: new Date(),
-        openCount: sql`${appInstalls.openCount} + 1`,
-        appVersion: data.appVersion ?? null,
-      },
-    });
+    // Try to find existing record
+    const existing = await sbFetch(`app_installs?deviceId=eq.${encodeURIComponent(data.deviceId)}&limit=1`);
+    if (existing && existing.length > 0) {
+      // Update existing
+      await sbFetch(`app_installs?deviceId=eq.${encodeURIComponent(data.deviceId)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          "lastOpenAt": new Date().toISOString(),
+          "openCount": (existing[0].openCount ?? 1) + 1,
+          "appVersion": data.appVersion ?? existing[0].appVersion,
+        }),
+      });
+    } else {
+      // Insert new
+      await sbFetch('app_installs', {
+        method: 'POST',
+        body: JSON.stringify({
+          "deviceId": data.deviceId,
+          "appVersion": data.appVersion ?? null,
+          platform: data.platform ?? null,
+          "deviceModel": data.deviceModel ?? null,
+          country: data.country ?? null,
+        }),
+      });
+    }
   } catch (err) {
     console.warn("[AppInstalls] Failed to record:", err);
   }
 }
 
-/** جلب إحصائيات التنزيلات للمدير */
 export async function getInstallStats(sinceDate?: Date): Promise<{
   total: number;
   byPlatform: { platform: string; count: number }[];
@@ -457,45 +530,36 @@ export async function getInstallStats(sinceDate?: Date): Promise<{
   recent: AppInstall[];
   dailyCounts: { date: string; count: number }[];
 }> {
-  const db = await getDb();
-  if (!db) return { total: 0, byPlatform: [], byVersion: [], byCountry: [], recent: [], dailyCounts: [] };
-
-  const baseQuery = sinceDate
-    ? db.select().from(appInstalls).where(sql`${appInstalls.firstOpenAt} >= ${sinceDate}`)
-    : db.select().from(appInstalls);
-
-  const [allInstalls, recent] = await Promise.all([
-    baseQuery.orderBy(desc(appInstalls.firstOpenAt)),
-    (sinceDate
-      ? db.select().from(appInstalls).where(sql`${appInstalls.firstOpenAt} >= ${sinceDate}`)
-      : db.select().from(appInstalls)
-    ).orderBy(desc(appInstalls.firstOpenAt)).limit(50),
-  ]);
-
+  let query = 'app_installs?order=firstOpenAt.desc';
+  if (sinceDate) {
+    query += `&firstOpenAt=gte.${sinceDate.toISOString()}`;
+  }
+  const allInstalls = await sbFetch(query);
+  if (!allInstalls || allInstalls.length === 0) {
+    return { total: 0, byPlatform: [], byVersion: [], byCountry: [], recent: [], dailyCounts: [] };
+  }
+  
   const total = allInstalls.length;
-
-  // تجميع حسب المنصة
+  const recent = allInstalls.slice(0, 50).map(mapInstallRow);
+  
   const platformMap: Record<string, number> = {};
   const versionMap: Record<string, number> = {};
   const dayMap: Record<string, number> = {};
   const countryMap: Record<string, number> = {};
-
+  
   for (const r of allInstalls) {
     const p = r.platform ?? 'unknown';
     platformMap[p] = (platformMap[p] ?? 0) + 1;
-
     const v = r.appVersion ?? 'unknown';
     versionMap[v] = (versionMap[v] ?? 0) + 1;
-
-    const d = r.firstOpenAt.toISOString().slice(0, 10);
-    dayMap[d] = (dayMap[d] ?? 0) + 1;
-
+    const d = (r.firstOpenAt ?? '').slice(0, 10);
+    if (d) dayMap[d] = (dayMap[d] ?? 0) + 1;
     if (r.country) {
       const c = r.country.toUpperCase();
       countryMap[c] = (countryMap[c] ?? 0) + 1;
     }
   }
-
+  
   return {
     total,
     byPlatform: Object.entries(platformMap).map(([platform, count]) => ({ platform, count })),
@@ -506,20 +570,30 @@ export async function getInstallStats(sinceDate?: Date): Promise<{
   };
 }
 
-// ── Referrals (نظام الإحالة - تم حذفه) ────────────────────────────────────────
+function mapInstallRow(r: any): AppInstall {
+  return {
+    id: r.id,
+    deviceId: r.deviceId,
+    appVersion: r.appVersion,
+    platform: r.platform,
+    deviceModel: r.deviceModel,
+    country: r.country,
+    firstOpenAt: new Date(r.firstOpenAt),
+    lastOpenAt: new Date(r.lastOpenAt),
+    openCount: r.openCount,
+  } as AppInstall;
+}
 
+// ── Referrals (نظام الإحالة - تم حذفه) ────────────────────────────────────────
 export async function getOrCreateReferralCode(_userId: number): Promise<string> {
   return '';
 }
-
 export async function validateReferralCode(_code: string): Promise<{ valid: boolean; referrerId?: number }> {
   return { valid: false };
 }
-
 export async function rewardReferrer(_referrerId: number, _extraDays: number): Promise<void> {
   return;
 }
-
 export async function getReferralStats(): Promise<{
   total: number;
   pending: number;
@@ -530,11 +604,9 @@ export async function getReferralStats(): Promise<{
 }> {
   return { total: 0, pending: 0, subscribed: 0, rewarded: 0, topReferrers: [], recent: [] };
 }
-
 export async function getUserReferrals(_userId: number): Promise<any[]> {
   return [];
 }
-
 export async function applyReferralOnSubscription(_code: string, _userId: number, _email: string): Promise<{ referrerId: number } | null> {
   return null;
 }
