@@ -74,10 +74,7 @@ async function startServer() {
     const serviceKeyMasked = serviceKey ? serviceKey.substring(0, 20) + '...' : 'NOT SET';
     
     try {
-      // Test Supabase REST API by reading from users table
       const { sbGetSessionUserByOpenId, sbUpsertSessionUser } = await import('../supabase-session-users.js');
-      
-      // Test upsert with a debug user
       await sbUpsertSessionUser({
         openId: 'debug_test_user',
         name: 'Debug Test',
@@ -85,10 +82,7 @@ async function startServer() {
         loginMethod: 'debug',
         role: 'user',
       });
-      
-      // Test read
       const user = await sbGetSessionUserByOpenId('debug_test_user');
-      
       return res.json({
         ok: true,
         supabaseUrlMasked,
@@ -147,54 +141,6 @@ async function startServer() {
     }
   });
 
-
-  // رابط تنزيل APK المخصص — يعيد التوجيه لأحدث إصدار على GitHub
-  app.get("/download", (_req, res) => {
-    res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
-  });
-
-  // رابط بديل مختصر
-  app.get("/apk", (_req, res) => {
-    res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
-  });
-
-  app.use(
-    "/api/trpc",
-    createExpressMiddleware({
-      router: appRouter,
-      createContext,
-      onError({ error, type, path, input }) {
-        console.error(`[tRPC Error] ${type} ${path}:`, error.message);
-        if (error.cause) {
-          console.error('[tRPC Error] cause:', JSON.stringify(error.cause, null, 2));
-        }
-        // Log the full error object for PostgreSQL errors
-        const cause = error.cause as any;
-        if (cause?.code || cause?.constraint || cause?.detail) {
-          console.error('[DB Error] code:', cause.code, 'constraint:', cause.constraint, 'detail:', cause.detail, 'message:', cause.message);
-        }
-      },
-    }),
-  );
-
-  const preferredPort = parseInt(process.env.PORT || "3000");
-  const port = await findAvailablePort(preferredPort);
-
-  if (port !== preferredPort) {
-    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
-  }
-
-  server.listen(port, () => {
-    console.log(`[api] server listening on port ${port}`);
-    // تشغيل خدمة تذكير تجديد الاشتراك التلقائي (بريد + push)
-    startRenewalReminderScheduler();
-    startPushNotificationScheduler();
-  });
-}
-
-startServer().catch(console.error);
-
-
   // Debug endpoint to check session users table and admin role
   app.get("/api/debug/session-users", async (_req, res) => {
     try {
@@ -226,4 +172,47 @@ startServer().catch(console.error);
     }
   });
 
-  
+  // رابط تنزيل APK المخصص — يعيد التوجيه لأحدث إصدار على GitHub
+  app.get("/download", (_req, res) => {
+    res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
+  });
+
+  // رابط بديل مختصر
+  app.get("/apk", (_req, res) => {
+    res.redirect(301, "https://github.com/mrmsd76-lang/kitabplus-releases/releases/latest/download/bookstore-app.apk");
+  });
+
+  app.use(
+    "/api/trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
+      onError({ error, type, path, input }) {
+        console.error(`[tRPC Error] ${type} ${path}:`, error.message);
+        if (error.cause) {
+          console.error('[tRPC Error] cause:', JSON.stringify(error.cause, null, 2));
+        }
+        const cause = error.cause as any;
+        if (cause?.code || cause?.constraint || cause?.detail) {
+          console.error('[DB Error] code:', cause.code, 'constraint:', cause.constraint, 'detail:', cause.detail, 'message:', cause.message);
+        }
+      },
+    }),
+  );
+
+  const preferredPort = parseInt(process.env.PORT || "3000");
+  const port = await findAvailablePort(preferredPort);
+
+  if (port !== preferredPort) {
+    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  }
+
+  server.listen(port, () => {
+    console.log(`[api] server listening on port ${port}`);
+    // تشغيل خدمة تذكير تجديد الاشتراك التلقائي (بريد + push)
+    startRenewalReminderScheduler();
+    startPushNotificationScheduler();
+  });
+}
+
+startServer().catch(console.error);
