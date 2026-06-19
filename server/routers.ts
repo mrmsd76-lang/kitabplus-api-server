@@ -347,14 +347,18 @@ export const appRouter = router({
      * لا يحتاج إلى موافقة المدير
      */
     activateTrial: publicProcedure
-      .input(z.object({ userId: z.number() }))
+      .input(z.object({ userId: z.number(), email: z.string().email().optional() }))
       .mutation(async ({ input }) => {
-        const user = await db.getAppUserById(input.userId);
+        // البحث عن المستخدم بالـ userId أولاً، ثم بالـ email كـ fallback
+        let user = input.userId ? await db.getAppUserById(input.userId) : undefined;
+        if (!user && input.email) {
+          user = await db.getAppUserByEmail(input.email);
+        }
         if (!user) {
           return { success: false, error: 'المستخدم غير موجود' };
         }
         // التحقق من أن المستخدم لم يستخدم التجربة مسبقاً
-        const history = await db.getPaymentHistoryByUserId(input.userId, 100);
+        const history = await db.getPaymentHistoryByUserId(user.id, 100);
         const alreadyUsedTrial = history.some(h => h.plan === 'trial');
         if (alreadyUsedTrial) {
           return { success: false, error: 'لقد استخدمت الخطة التجريبية مسبقاً. يمكنك الاشتراك في الخطة السنوية.' };
@@ -362,11 +366,11 @@ export const appRouter = router({
         // حساب انتهاء التجربة (24 ساعة)
         const expiry = calcSubscriptionExpiry('trial');
         // تحديث الاشتراك في قاعدة البيانات
-        await db.updateAppUserSubscription(input.userId, 'trial', expiry);
+        await db.updateAppUserSubscription(user.id, 'trial', expiry);
         // تسجيل في سجل الدفع لمنع التكرار
         try {
           await db.insertPaymentHistory({
-            userId: input.userId,
+            userId: user.id,
             customerEmail: user.email ?? null,
             gateway: 'free',
             chargeId: `trial_${Date.now()}`,
@@ -374,7 +378,7 @@ export const appRouter = router({
             currency: 'USD',
             plan: 'trial',
             status: 'success',
-            referenceId: `trial_${input.userId}_${Date.now()}`,
+            referenceId: `trial_${user.id}_${Date.now()}`,
           });
         } catch { /* non-critical */ }
         // إرسال بريد تأكيد
