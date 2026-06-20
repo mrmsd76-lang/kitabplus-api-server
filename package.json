@@ -7,7 +7,9 @@
     "build": "npx esbuild server/_core/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "start": "node dist/index.js"
   },
-  "engines": { "node": ">=20.0.0" },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "dependencies": {
     "@trpc/server": "11.7.2",
     "axios": "^1.13.2",
@@ -25,5 +27,6 @@
     "@types/node": "^22.0.0",
     "esbuild": "^0.25.12",
     "typescript": "~5.9.3"
-  }
+  },
+  "_deployTrigger": "2026-06-20T09:22:34Z"
 }
