@@ -803,6 +803,61 @@ export const appRouter = router({
       }),
 
     /**
+     * طلب تحويل شخصي عبر شام كاش
+     */
+    submitShamCashTransfer: publicProcedure
+      .input(z.object({
+        customerName: z.string().min(1),
+        customerEmail: z.string().email(),
+        plan: z.enum(['monthly', 'yearly']),
+        amount: z.number().positive(),
+        currency: z.string().default('USD'),
+        receiptNote: z.string().trim().min(1).max(128),
+        userId: z.number().optional(),
+        discountPercent: z.number().optional(),
+        codeId: z.number().optional(),
+      }))
+      .mutation(async ({ input }) => {
+        const planLabel = input.plan === 'monthly' ? 'شهري' : 'سنوي';
+        // تدعم النسخ المنشورة القديمة التي ترسل قيمة بالدولار والنسخ الجديدة التي ترسل السنتات.
+        const amountInCents = input.amount < 1000 ? Math.round(input.amount * 100) : Math.round(input.amount);
+        const displayAmount = (amountInCents / 100).toFixed(2);
+        let recordId: number;
+        try {
+          recordId = await db.insertPaymentHistory({
+            userId: input.userId ?? undefined,
+            customerEmail: input.userId ? undefined : input.customerEmail,
+            gateway: 'shamcash',
+            chargeId: `shamcash_pending_${Date.now()}`,
+            amount: amountInCents,
+            currency: 'USD',
+            status: 'pending',
+            plan: input.plan,
+            cardBrand: 'Sham Cash',
+            referenceId: input.receiptNote,
+          });
+          if (!recordId) throw new Error('Supabase did not return an order id');
+        } catch (error) {
+          console.error('[Sham Cash] Failed to save pending record:', error);
+          throw new Error('تعذّر حفظ طلب شام كاش. لم يُرسل الطلب للمراجعة، يرجى المحاولة لاحقاً.');
+        }
+
+        const adminEmail = process.env.ADMIN_EMAIL || 'onboarding@resend.dev';
+        await sendEmail({
+          to: adminEmail,
+          subject: `طلب شام كاش جديد — ${input.customerName} ($${displayAmount} USD)`,
+          html: `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:auto"><h2 style="color:#168f6b">طلب تحويل شام كاش جديد</h2><p>يحتاج الطلب إلى مراجعة التحويل وتفعيل الاشتراك يدوياً.</p><p><b>الاسم:</b> ${input.customerName}</p><p><b>البريد:</b> ${input.customerEmail}</p><p><b>الخطة:</b> ${planLabel}</p><p><b>المبلغ:</b> $${displayAmount} USD</p><p><b>رقم المرجع:</b> ${input.receiptNote}</p><p><b>معرّف الطلب في Supabase:</b> ${recordId}</p></div>`,
+        }).catch((error) => console.error('[Sham Cash] Admin email failed:', error));
+        sendAdminNewPaymentPushNotification('shamcash', input.customerName, input.customerEmail, input.plan, `${displayAmount} USD`).catch(() => {});
+        await sendEmail({
+          to: input.customerEmail,
+          subject: 'تم استلام طلب شام كاش — كتاب+',
+          html: `<div dir="rtl" style="font-family:Arial,sans-serif"><h2>تم استلام طلبك</h2><p>مرحباً ${input.customerName}، تم استلام طلب تفعيل اشتراكك عبر شام كاش.</p><p>الخطة: ${planLabel} — المبلغ: $${displayAmount} USD</p><p>رقم المرجع: ${input.receiptNote}</p></div>`,
+        }).catch(() => {});
+        return { success: true, dbSaved: true, recordId };
+      }),
+
+    /**
      * طلب تحويل شخصي عبر PayPal
      */
     submitPayPalTransfer: publicProcedure
@@ -812,7 +867,7 @@ export const appRouter = router({
         plan: z.enum(['monthly', 'yearly']),
         amount: z.number(),
         currency: z.string().default('USD'),
-        receiptNote: z.string().optional(),
+        receiptNote: z.string().trim().min(1).max(128),
         userId: z.number().optional(),
         discountPercent: z.number().optional(),
         codeId: z.number().optional(),
@@ -822,7 +877,7 @@ export const appRouter = router({
         const submittedAt = new Date().toLocaleString('ar-SA', { timeZone: 'Asia/Riyadh' });
 
         // حفظ الطلب في سجل الدفعات (يُحفظ دائماً — بـ userId أو بـ customerEmail)
-        let paypalRecordId: number | undefined;
+        let paypalRecordId: number;
         try {
           paypalRecordId = await db.insertPaymentHistory({
             userId: input.userId ?? undefined,
@@ -834,13 +889,15 @@ export const appRouter = router({
             status: 'pending',
             plan: input.plan,
             cardBrand: 'PayPal',
-            referenceId: input.receiptNote ?? undefined
+            referenceId: input.receiptNote
           });
+          if (!paypalRecordId) throw new Error('Supabase did not return an order id');
           console.log(`[PayPal] Pending record saved: id=${paypalRecordId}, userId=${input.userId ?? 'guest'}, email=${input.customerEmail}, amount=${input.amount / 100} USD`);
         } catch (dbErr) {
           console.error('[PayPal] Failed to save pending record:', dbErr);
+          throw new Error('تعذّر حفظ طلب PayPal. لم يُرسل الطلب للمراجعة، يرجى المحاولة لاحقاً.');
         }
-        const paypalDbSaved = paypalRecordId !== undefined;
+        const paypalDbSaved = true;
 
         // المبلغ الحقيقي للعرض (مخزّن بالسنتات)
         const displayAmount = (input.amount / 100).toFixed(2);
@@ -860,8 +917,8 @@ export const appRouter = router({
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">البريد الإلكتروني</td><td style="padding: 10px; font-weight: bold;">${input.customerEmail}</td></tr>
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">نوع الاشتراك</td><td style="padding: 10px; font-weight: bold;">${planLabel}</td></tr>
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">المبلغ المحوّل</td><td style="padding: 10px; font-weight: bold; color: #003087; font-size: 18px;">$${displayAmount} USD</td></tr>
-                ${input.receiptNote ? `<tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">رقم المرجع</td><td style="padding: 10px; font-weight: bold;">${input.receiptNote}</td></tr>` : ''}
-                <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">معرّف الطلب في DB</td><td style="padding: 10px;">${paypalRecordId ?? 'لم يُحفظ'}</td></tr>
+                <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">رقم المرجع</td><td style="padding: 10px; font-weight: bold;">${input.receiptNote}</td></tr>
+                <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">معرّف الطلب في Supabase</td><td style="padding: 10px;">${paypalRecordId}</td></tr>
                 <tr><td style="padding: 10px; color: #666;">وقت الطلب</td><td style="padding: 10px;">${submittedAt}</td></tr>
               </table>
               <div style="margin-top: 20px; padding: 16px; background: #E3F2FD; border-radius: 8px; border-right: 4px solid #003087;">
@@ -880,9 +937,9 @@ export const appRouter = router({
           console.error(`[PayPal] Admin email FAILED to ${adminEmail}:`, adminEmailResult.error);
         } else {
           console.log(`[PayPal] Admin email sent to ${adminEmail}`);
-        // إشعار Push فوري للمدير
-        sendAdminNewPaymentPushNotification('paypal', input.customerName, input.customerEmail, input.plan, `${displayAmount} USD`).catch(() => {});
         }
+        // إشعار Push فوري للمدير مستقل عن نجاح البريد الإلكتروني.
+        sendAdminNewPaymentPushNotification('paypal', input.customerName, input.customerEmail, input.plan, `${displayAmount} USD`).catch(() => {});
 
         // إرسال بريد تأكيد للعميل
         const clientHtml = `
@@ -1525,6 +1582,57 @@ export const appRouter = router({
           console.warn('[STC] Failed to send push notification:', pushErr);
         }
         return { success: true, userId: resolvedUserId, plan: input.plan, expiry: expiry.toISOString() };
+      }),
+
+    /**
+     * جلب طلبات شام كاش المعلّقة
+     */
+    listPendingShamCash: publicProcedure.query(async () => {
+      const records = await db.getPendingShamCashPayments(100);
+      return Promise.all(records.map(async (r) => {
+        let user = r.userId ? await db.getAppUserById(r.userId) : null;
+        if (!user && r.customerEmail) user = await db.getAppUserByEmail(r.customerEmail);
+        return {
+          id: r.id,
+          userId: r.userId,
+          userEmail: user?.email ?? r.customerEmail ?? null,
+          userName: user?.name ?? (r.customerEmail ? r.customerEmail.split('@')[0] : null),
+          userExists: user !== null,
+          amount: r.amount,
+          currency: r.currency ?? 'USD',
+          plan: r.plan ?? 'monthly',
+          referenceId: r.referenceId ?? null,
+          status: r.status,
+          createdAt: r.createdAt.toISOString(),
+        };
+      }));
+    }),
+
+    /**
+     * تفعيل اشتراك مستخدم بعد التحقق من تحويل شام كاش
+     */
+    activateShamCashSubscription: publicProcedure
+      .input(z.object({
+        recordId: z.number(),
+        userId: z.number().nullable().optional(),
+        userEmail: z.string().email().optional(),
+        plan: z.enum(['monthly', 'yearly']),
+      }))
+      .mutation(async ({ input }) => {
+        let user = input.userId ? await db.getAppUserById(input.userId) : undefined;
+        if (!user && input.userEmail) user = await db.getAppUserByEmail(input.userEmail);
+        if (!user) return { success: false, error: 'المستخدم غير موجود' };
+        const expiry = calcSubscriptionExpiry(input.plan);
+        await db.updateAppUserSubscription(user.id, input.plan, expiry);
+        await db.updatePaymentHistoryStatus(input.recordId, 'success');
+        if (user.email) {
+          await sendEmail({
+            to: user.email,
+            subject: 'تم تفعيل اشتراكك — كتاب+',
+            html: buildSubscriptionConfirmEmailHtml(user.name ?? 'عزيزي المشترك', input.plan, expiry),
+          });
+        }
+        return { success: true, userId: user.id, plan: input.plan, expiry: expiry.toISOString() };
       }),
 
     /**

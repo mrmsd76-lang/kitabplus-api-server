@@ -448,6 +448,12 @@ export async function getPendingPayPalPayments(limit = 100): Promise<PaymentHist
   return rows.map(mapPaymentHistoryRow);
 }
 
+export async function getPendingShamCashPayments(limit = 100): Promise<PaymentHistoryRecord[]> {
+  const rows = await sbFetch(`payment_history?gateway=eq.shamcash&status=eq.pending&order=createdAt.desc&limit=${limit}`);
+  if (!rows) return [];
+  return rows.map(mapPaymentHistoryRow);
+}
+
 export async function getPendingWisePayments(limit = 100): Promise<PaymentHistoryRecord[]> {
   const rows = await sbFetch(`payment_history?gateway=eq.wise&status=eq.pending&order=createdAt.desc&limit=${limit}`);
   if (!rows) return [];
