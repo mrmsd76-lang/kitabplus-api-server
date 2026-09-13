@@ -812,7 +812,7 @@ export const appRouter = router({
         plan: z.enum(['monthly', 'yearly']),
         amount: z.number().positive(),
         currency: z.string().default('USD'),
-        receiptNote: z.string().trim().min(1).max(128),
+        receiptNote: z.string().trim().max(128).optional(),
         userId: z.number().optional(),
         discountPercent: z.number().optional(),
         codeId: z.number().optional(),
@@ -834,7 +834,7 @@ export const appRouter = router({
             status: 'pending',
             plan: input.plan,
             cardBrand: 'Sham Cash',
-            referenceId: input.receiptNote,
+            referenceId: input.receiptNote || undefined,
           });
           if (!recordId) throw new Error('Supabase did not return an order id');
         } catch (error) {
@@ -846,13 +846,13 @@ export const appRouter = router({
         await sendEmail({
           to: adminEmail,
           subject: `طلب شام كاش جديد — ${input.customerName} ($${displayAmount} USD)`,
-          html: `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:auto"><h2 style="color:#168f6b">طلب تحويل شام كاش جديد</h2><p>يحتاج الطلب إلى مراجعة التحويل وتفعيل الاشتراك يدوياً.</p><p><b>الاسم:</b> ${input.customerName}</p><p><b>البريد:</b> ${input.customerEmail}</p><p><b>الخطة:</b> ${planLabel}</p><p><b>المبلغ:</b> $${displayAmount} USD</p><p><b>رقم المرجع:</b> ${input.receiptNote}</p><p><b>معرّف الطلب في Supabase:</b> ${recordId}</p></div>`,
+          html: `<div dir="rtl" style="font-family:Arial,sans-serif;max-width:600px;margin:auto"><h2 style="color:#168f6b">طلب تحويل شام كاش جديد</h2><p>يحتاج الطلب إلى مراجعة التحويل وتفعيل الاشتراك يدوياً.</p><p><b>الاسم:</b> ${input.customerName}</p><p><b>البريد:</b> ${input.customerEmail}</p><p><b>الخطة:</b> ${planLabel}</p><p><b>المبلغ:</b> $${displayAmount} USD</p><p><b>رقم المرجع:</b> ${input.receiptNote || 'لم يُدخل المستخدم رقم مرجع'}</p><p><b>معرّف الطلب في Supabase:</b> ${recordId}</p></div>`,
         }).catch((error) => console.error('[Sham Cash] Admin email failed:', error));
         sendAdminNewPaymentPushNotification('shamcash', input.customerName, input.customerEmail, input.plan, `${displayAmount} USD`).catch(() => {});
         await sendEmail({
           to: input.customerEmail,
           subject: 'تم استلام طلب شام كاش — كتاب+',
-          html: `<div dir="rtl" style="font-family:Arial,sans-serif"><h2>تم استلام طلبك</h2><p>مرحباً ${input.customerName}، تم استلام طلب تفعيل اشتراكك عبر شام كاش.</p><p>الخطة: ${planLabel} — المبلغ: $${displayAmount} USD</p><p>رقم المرجع: ${input.receiptNote}</p></div>`,
+          html: `<div dir="rtl" style="font-family:Arial,sans-serif"><h2>تم استلام طلبك</h2><p>مرحباً ${input.customerName}، تم استلام طلب تفعيل اشتراكك عبر شام كاش.</p><p>الخطة: ${planLabel} — المبلغ: $${displayAmount} USD</p><p>رقم المرجع: ${input.receiptNote || 'لم يُدخل المستخدم رقم مرجع'}</p></div>`,
         }).catch(() => {});
         return { success: true, dbSaved: true, recordId };
       }),
@@ -867,7 +867,7 @@ export const appRouter = router({
         plan: z.enum(['monthly', 'yearly']),
         amount: z.number(),
         currency: z.string().default('USD'),
-        receiptNote: z.string().trim().min(1).max(128),
+        receiptNote: z.string().trim().max(128).optional(),
         userId: z.number().optional(),
         discountPercent: z.number().optional(),
         codeId: z.number().optional(),
@@ -889,7 +889,7 @@ export const appRouter = router({
             status: 'pending',
             plan: input.plan,
             cardBrand: 'PayPal',
-            referenceId: input.receiptNote
+            referenceId: input.receiptNote || undefined
           });
           if (!paypalRecordId) throw new Error('Supabase did not return an order id');
           console.log(`[PayPal] Pending record saved: id=${paypalRecordId}, userId=${input.userId ?? 'guest'}, email=${input.customerEmail}, amount=${input.amount / 100} USD`);
@@ -917,7 +917,7 @@ export const appRouter = router({
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">البريد الإلكتروني</td><td style="padding: 10px; font-weight: bold;">${input.customerEmail}</td></tr>
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">نوع الاشتراك</td><td style="padding: 10px; font-weight: bold;">${planLabel}</td></tr>
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">المبلغ المحوّل</td><td style="padding: 10px; font-weight: bold; color: #003087; font-size: 18px;">$${displayAmount} USD</td></tr>
-                <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">رقم المرجع</td><td style="padding: 10px; font-weight: bold;">${input.receiptNote}</td></tr>
+                <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">رقم المرجع</td><td style="padding: 10px; font-weight: bold;">${input.receiptNote || 'لم يُدخل المستخدم رقم مرجع'}</td></tr>
                 <tr style="border-bottom: 1px solid #eee;"><td style="padding: 10px; color: #666;">معرّف الطلب في Supabase</td><td style="padding: 10px;">${paypalRecordId}</td></tr>
                 <tr><td style="padding: 10px; color: #666;">وقت الطلب</td><td style="padding: 10px;">${submittedAt}</td></tr>
               </table>
